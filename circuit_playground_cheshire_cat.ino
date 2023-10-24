@@ -3,27 +3,132 @@
 #include <Adafruit_Circuit_Playground.h>
 #include <Adafruit_CircuitPlayground.h>
 
+
 using namespace adk;
 
+# define MODE_SWITCH 21
 # define LED_PIN 12
-# define LED_COUNT 40
 # define Z_THRESHOLD 9.5
-# define LEFT_ARM_LENGTH 8
-# define LEFT_LEG_LENGTH 12
-# define RIGHT_LEG_LENGTH 12
-# define RIGHT_ARM_LENGTH 8
-# define TOTAL_PIXELS (LEFT_ARM_LENGTH + LEFT_LEG_LENGTH + RIGHT_LEG_LENGTH + RIGHT_ARM_LENGTH)
-# define MAX_FRAMES (4 * max(max(LEFT_ARM_LENGTH, LEFT_LEG_LENGTH), max(RIGHT_LEG_LENGTH, RIGHT_ARM_LENGTH)))
+# define TOTAL_PIXELS 40
+# define MAX_FRAMES (4 * max(max(left_arm_length, left_leg_length), max(right_leg_length, right_arm_length)))
+# define CHASE_LENGTH 5
+# define CHASE_SPEED 150
 # define NUM_SPARKLE_PIXELS 5
 # define DEFAULT_MODE ApplicationMode::SingleVertical
 # define DEFAULT_ANIMATION_INTERVAL 100
 # define DEFAULT_ANIMATION_INITIAL_DELAY 5000
 
+// left arm pixels from top to bottom
+const uint8_t left_arm_length = 7;
+const uint8_t left_arm_pixels[] = {
+  6,
+  5,
+  4,
+  3,
+  2,
+  1,
+  0,
+};
 
+// left leg pixels from top to bottom
+const uint8_t left_leg_length = 13;
+const uint8_t left_leg_pixels[] = {
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  19,
+  14,
+  18,
+  15,
+  17,
+  16,
+};
+
+// right leg pixels from top to bottom
+const uint8_t right_leg_length = 13;
+const uint8_t right_leg_pixels[] = {
+  32,
+  31,
+  30,
+  29,
+  28,
+  20,
+  27,
+  21,
+  26,
+  22,
+  25,
+  23,
+  24,
+};
+
+// right arm pixels from top to bottom
+const uint8_t right_arm_length = 7;
+const uint8_t right_arm_pixels[] = {
+  33,
+  34,
+  35,
+  36,
+  37,
+  38,
+  39,
+};
+
+
+// horizontal traversal, cross-cutting appendages
+const uint8_t horizontal_traversal_pixels[] = {
+  6,
+  33,
+  34,
+  5,
+  7,
+  8,
+  31,
+  32,
+  35,
+  4,
+  9,
+  30,
+  29,
+  36,
+  3,
+  10,
+  28,
+  37,
+  11,
+  38,
+  2,
+  12,
+  13,
+  19,
+  20,
+  27,
+  1,
+  14,
+  18,
+  21,
+  26,
+  39,
+  0,
+  15,
+  17,
+  22,
+  25,
+  16,
+  23,
+  24,
+};
+
+
+Task task_z;
 float Z;
 Adafruit_CPlay_NeoPixel strip;
 
-enum Transition {None = 0, Appearing = 1, Disappearing = 2} state; 
+enum Transition {None = 0, Appearing = 1, Disappearing = 2} state;
 
 enum class PixelIntensity {
   Off = 0,
@@ -155,6 +260,7 @@ public:
   static void task_animate_sparkles(void*);
   void __sparkle_task();
   void set_color(PixelColor c);
+  void transition_vertical(uint8_t idx, PixelIntensity intensity);
 
   void all(PixelIntensity intensity) {
     for (int i = 0; i < TOTAL_PIXELS; i++) {
@@ -183,7 +289,7 @@ public:
       // transition not allowed
       return -1;
     }
-    
+
     set_transition(Appearing);
     all(PixelIntensity::Off);
     // start transition task
@@ -204,56 +310,49 @@ public:
     // sleep 2
     set_transition(None);
   }
-  
-  void transition_frame(int idx, PixelIntensity intensity) {
-    dmsg("transition_frame(%d, %d)\n", idx, (int)intensity);
-    // map idx to appendage and actual pixel id
-    /*
-     * Assume a grid of 4 columns, one for each appendage. Some
-     * appendages might be shorter than others, but we still
-     * consider those pixels for simplicity. When a "ghost"
-     * pixel is updated, we ignore it.
-     */
-    Appendage appendage = (Appendage)(idx % 4);
-    int i = idx / 4;
-    transition_appendage(appendage, i, intensity);
+
+  void transition_frame(uint8_t idx, PixelIntensity intensity) {
+    if (idx >= TOTAL_PIXELS) {
+      return;
+    }
+
+    set_pixel(horizontal_traversal_pixels[idx], intensity);
   }
-  
-  void transition_appendage(Appendage appendage, int idx, PixelIntensity i) {
-    dmsg("transition_appendage: %d, %d, %d\n", (int)appendage, idx, (int)i);
-    int pixel = 0;
+
+  void transition_appendage(Appendage appendage, uint8_t idx, PixelIntensity i) {
+    uint8_t pixel = 0;
     switch(appendage) {
       case Appendage::LeftArm:
-        if (idx >= LEFT_ARM_LENGTH) {
+        if (idx >= left_arm_length) {
           return;
         }
-        pixel = idx;
+        pixel = left_arm_pixels[idx];
         break;
       case Appendage::LeftLeg:
-        if (idx >= LEFT_LEG_LENGTH) {
+        if (idx >= left_leg_length) {
           return;
         }
-        pixel = idx + LEFT_ARM_LENGTH;
+        pixel = left_leg_pixels[idx];
         break;
       case Appendage::RightLeg:
-        if (idx >= RIGHT_LEG_LENGTH) {
+        if (idx >= right_leg_length) {
           return;
         }
-        pixel = idx + LEFT_ARM_LENGTH + LEFT_LEG_LENGTH;
+        pixel = right_leg_pixels[idx];
         break;
       case Appendage::RightArm:
-        if (idx >= RIGHT_ARM_LENGTH) {
+        if (idx >= right_arm_length) {
           return;
         }
 
-        pixel = idx + LEFT_ARM_LENGTH + LEFT_LEG_LENGTH + RIGHT_LEG_LENGTH;
+        pixel = right_arm_pixels[idx];
         break;
     }
 
     set_pixel(pixel, i);
   }
 
-  void set_pixel(uint16_t idx, PixelIntensity i) {
+  void set_pixel(uint8_t idx, PixelIntensity i) {
     uint8_t red = m_default_color.red();
     uint8_t green = m_default_color.green();
     uint8_t blue = m_default_color.blue();
@@ -389,6 +488,35 @@ void Model::task_animate_sparkles(void *m) {
   static_cast<Model*>(m)->__sparkle_task();
 }
 
+void Model::transition_vertical(uint8_t idx, PixelIntensity intensity) {
+  if (idx >= TOTAL_PIXELS || idx < 0) {
+    return;
+  }
+
+  if (idx < left_arm_length) {
+    transition_appendage(Appendage::LeftArm, idx, intensity);
+    return;
+  }
+  idx = idx - left_arm_length;
+
+  if (idx < left_leg_length) {
+    transition_appendage(Appendage::LeftLeg, idx, intensity);
+    return;
+  }
+  idx = idx - left_leg_length;
+
+  if (idx < right_leg_length) {
+    transition_appendage(Appendage::RightLeg, idx, intensity);
+    return;
+  }
+  idx = idx - right_leg_length;
+
+  if (idx < right_arm_length) {
+    transition_appendage(Appendage::RightArm, idx, intensity);
+    return;
+  }
+}
+
 
 class TaskAnimateSingleSparkle : public Task {
   int m_id;
@@ -468,19 +596,19 @@ void TaskAnimateSingleVertical::run() {
   Appendage next_appendage;
   switch (m_appendage) {
     case Appendage::LeftArm:
-      appendage_length = LEFT_ARM_LENGTH;
+      appendage_length = left_arm_length;
       next_appendage = Appendage::LeftLeg;
       break;
     case Appendage::LeftLeg:
-      appendage_length = LEFT_LEG_LENGTH;
+      appendage_length = left_leg_length;
       next_appendage = Appendage::RightLeg;
       break;
     case Appendage::RightLeg:
-      appendage_length = RIGHT_LEG_LENGTH;
+      appendage_length = right_leg_length;
       next_appendage = Appendage::RightArm;
       break;
     case Appendage::RightArm:
-      appendage_length = RIGHT_ARM_LENGTH;
+      appendage_length = right_arm_length;
       next_appendage = Appendage::LeftArm;
       break;
     default:
@@ -536,10 +664,10 @@ void TaskAnimateSparkles::select_pixels_for_animation() {
     if (p->id == -1) {
       continue;
     }
-    
+
     if (p->is_complete()) {
       p->id = -1;
-      p->reset();      
+      p->reset();
     }
   }
 
@@ -571,12 +699,55 @@ void TaskAnimateSparkles::run() {
     if (p->id == -1) {
       continue;
     }
-    
+
     model.transition_frame(p->id, p->intensity());
     p->increment_frame();
   }
 
   strip.show();
+}
+
+
+class TaskTraverse : public Task {
+  uint8_t m_idx;
+  bool m_asc;
+  bool m_is_horizontal;
+public:
+  TaskTraverse() : m_idx(0), m_asc(true), m_is_horizontal(true) {};
+  virtual void run();
+};
+
+
+void TaskTraverse::run() {
+  PixelIntensity intensity = PixelIntensity::Light;
+  strip.clear();
+  if (m_is_horizontal) {
+    model.transition_frame(m_idx, intensity);
+  } else {
+    model.transition_vertical(m_idx, intensity);
+  }
+  strip.show();
+
+  if (m_asc) {
+    m_idx++;
+  } else {
+    m_idx--;
+  }
+
+  if (m_idx >= (TOTAL_PIXELS - 1) || m_idx <= 0) {
+    if (!m_asc) {
+      // switch traversal strategy
+      m_is_horizontal = !m_is_horizontal;
+    }
+
+    // reverse
+    m_asc = !m_asc;
+
+    // debug
+    dmsg("strategy: %d\n", m_is_horizontal);
+    dmsg("direction: %d\n", m_asc);
+    dmsg("m_idx: %d\n", m_idx);
+  }
 }
 
 // ------------------------------------------------------------
@@ -592,7 +763,8 @@ Task sparkle_animation;
 enum class ApplicationMode {
   Normal = 0,
   SingleVertical = 1,
-  SingleHorizontal = 2
+  SingleHorizontal = 2,
+  Diagnostic = 3,
 } mode;
 
 
@@ -601,33 +773,122 @@ void __show_pixels(void*) {
 }
 
 
-void switch_mode(void*) {
-  switch (mode) {
-    case ApplicationMode::Normal:
-      break;
-  }
-
-  strip.clear();
-}
-
 void print_version(void*) {
   Serial.println("starting v2...");
 }
 
 Task *current_task = nullptr;
-//TaskAnimateSingleVertical task_animate_single_vertical;
-TaskAnimateSparkles task;
+TaskAnimateSingleVertical task_animate_single_vertical;
+TaskAnimateSparkles task_animate_sparkles;
+TaskTraverse task_traverse;
+
+
+bool switch_state;
+void on_switch_change(void*) {
+  bool next_state = CircuitPlayground.slideSwitch();
+
+  if (switch_state == next_state) {
+    // no change
+    return;
+  }
+
+  dmsg("switch change: %d\n", next_state);
+
+  if (next_state) {
+    // switch to diagnostic mode
+    switch_mode(ApplicationMode::Diagnostic);
+  } else {
+    switch_mode(ApplicationMode::Normal);
+  }
+
+  switch_state = next_state;
+}
+
+void switch_mode(ApplicationMode m) {
+  if (m == mode) {
+    return;
+  }
+
+  dmsg("mode switch %d -> %d\n", mode, m);
+
+  // Suspend the current task
+  switch (mode) {
+    case ApplicationMode::Normal:
+      task_animate_sparkles.suspend();
+      task_z.suspend();
+      break;
+    case ApplicationMode::SingleVertical:
+      task_animate_single_vertical.suspend();
+      break;
+    case ApplicationMode::Diagnostic:
+      task_traverse.suspend();
+      break;
+  }
+
+  // TODO model.clear()
+  strip.clear();
+
+  switch (m) {
+    case ApplicationMode::Normal:
+      task_animate_sparkles.resume();
+      task_z.resume();
+      break;
+    case ApplicationMode::SingleVertical:
+      task_animate_single_vertical.resume();
+      break;
+    case ApplicationMode::Diagnostic:
+      task_traverse.resume();
+      break;
+  }
+
+  mode = m;
+}
+
+void task_one_pixel() {
+  static int i = 0;
+
+  strip.clear();
+  model.transition_frame(i++, PixelIntensity::Full);
+  strip.show();
+  if (i >= TOTAL_PIXELS) {
+    i = 0;
+  }
+}
+
+void check_z(void*) {
+  Z = CircuitPlayground.motionZ();
+
+  if (abs(Z) >= Z_THRESHOLD) {
+    state = Z > 0 ? Appearing : Disappearing;
+  } else {
+    state = None;
+  }
+
+  switch (state) {
+    case Appearing:
+      model.appear();
+      break;
+    case Disappearing:
+      model.disappear();
+      break;
+    default:
+      break;
+  }
+}
+
 
 void setup() {
   delay(5000);
   Serial.begin(9600);
-  CircuitPlayground.begin();  
-  strip = Adafruit_CPlay_NeoPixel(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+  CircuitPlayground.begin();
+  strip = Adafruit_CPlay_NeoPixel(TOTAL_PIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
   strip.begin();
   strip.clear();
   strip.setBrightness(40);
   state = None;
   randomSeed(analogRead(0));
+  mode = ApplicationMode::Normal;
+  switch_state = false;
 
 
   set_timeout(print_version, 5000);
@@ -643,23 +904,26 @@ void setup() {
       current_task = new TaskAnimateAllPixels();
       break;
   }*/
-  
-  /*
-  current_task = new TaskAnimateSingleVertical();
-  current_task->set_interval(500);
-  current_task->start(DEFAULT_ANIMATION_INITIAL_DELAY);
-  */
 
-  task.set_interval(DEFAULT_ANIMATION_INTERVAL).start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  //current_task = new TaskAnimateSparkles;
+  //current_task->set_interval(DEFAULT_ANIMATION_INTERVAL);
+  //current_task->start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  task_animate_sparkles.set_interval(DEFAULT_ANIMATION_INTERVAL).start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  current_task = &task_animate_sparkles;
 
+  task_traverse.set_interval(300).suspend();
+
+  adk::set_interval(on_switch_change, 200);
   //task_animate_single_vertical.start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  task_z.set_interval(200).start(check_z);
+
 
   //adk::set_interval(check_z, 200);
   //model.sparkle_animation();
   //sparkle_animation.set_interval(1000).start(&Model::task_animate_sparkles, &model);
   //task_animate_single_sparkle.set_interval(500).start(1);
   //task_animate_sparkles.set_interval(500).start(1);
-  
+
   //adk::set_interval(__show_pixels, 100);
   //adk::set_interval(task_one_pixel, 1000);
 }
@@ -668,38 +932,3 @@ void loop() {
   adk::run();
 }
 
-void task_one_pixel() {
-  static int i = 0;
-  
-  strip.clear();
-  model.transition_frame(i++, PixelIntensity::Full);
-  strip.show();
-  if (i >= TOTAL_PIXELS) {
-    i = 0;
-  }
-}
-
-void check_z() {
-  Z = CircuitPlayground.motionZ();
-  Serial.print("Z: ");
-  Serial.println(Z);
-
-  if (abs(Z) >= Z_THRESHOLD) {
-    state = Z > 0 ? Appearing : Disappearing;
-  } else {
-    state = None;
-  }
-  Serial.print("state: ");
-  Serial.println(state);
-
-  switch (state) {
-    case Appearing:
-      model.appear();
-      break;
-    case Disappearing:
-      model.disappear();
-      break;
-    default:
-      break;
-  }
-}
