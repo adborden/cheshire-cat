@@ -145,6 +145,15 @@ enum class Appendage {
   RightArm = 3,
 };
 
+
+enum class ApplicationMode {
+  Normal = 0,
+  SingleVertical = 1,
+  SingleHorizontal = 2,
+  Diagnostic = 3,
+} mode;
+
+
 class PixelColor {
   unsigned short m_red;
   unsigned short m_green;
@@ -268,47 +277,17 @@ public:
     }
   }
 
-  void set_transition(Transition t) {
-    switch(transition) {
-      case Appearing:
-        masked_pixels = 0;
-        break;
-      case Disappearing:
-        masked_pixels = TOTAL_PIXELS;
-        break;
-      default:
-        masked_pixels = TOTAL_PIXELS;
-        break;
-    }
+  void set_mask(uint8_t mask) {
+    masked_pixels = mask;
+  }
 
+  void set_transition(Transition t) {
     transition = t;
   }
 
-  int appear() {
-    if (transition != None) {
-      // transition not allowed
-      return -1;
-    }
-
-    set_transition(Appearing);
-    all(PixelIntensity::Off);
-    // start transition task
-    // sleep 8
-    set_transition(None);
-    return 0;
-  }
-
-  void disappear() {
-    if (transition != None) {
-      // transition not allowed
-      return;
-    }
-    set_transition(Disappearing);
-    all(PixelIntensity::Light);
-    Task *t = Task::get_current();
-    // start transition task
-    // sleep 2
-    set_transition(None);
+  bool can_transition(Transition t) {
+    // TODO use t
+    return transition == None;
   }
 
   void transition_frame(uint8_t idx, PixelIntensity intensity) {
@@ -455,7 +434,7 @@ void Model::__transition_task(Task &t) {
   int total_pixels = TOTAL_PIXELS;
   PixelIntensity intensity;
   int direction, start, end;
-  switch(transition) {
+  switch (transition) {
     case Appearing:
       intensity = PixelIntensity::Light;
       direction = 1; // animate top to bottom
@@ -750,6 +729,72 @@ void TaskTraverse::run() {
   }
 }
 
+void clear_transition(void*) {
+  model.set_transition(None);
+}
+
+class TaskAnimateTransition : public Task {
+  bool m_asc;
+  int m_end;
+  int m_idx;
+  Transition m_transition;
+  PixelIntensity m_intensity;
+public:
+  void set_transition(Transition t);
+  virtual void run();
+};
+
+void TaskAnimateTransition::set_transition(Transition t) {
+  if (!model.can_transition(t)) {
+    return;
+  }
+
+  dmsg("TaskAnimateTransition::set_transition: %d\n", t);
+
+  int start;
+  switch (t) {
+    case Appearing:
+      // set all pixels off to start so they can appear
+      model.all(PixelIntensity::Off);
+      m_intensity = PixelIntensity::Light;
+      m_asc = true; // animate top to bottom
+      start = 0;
+      m_end = TOTAL_PIXELS;
+      break;
+    case Disappearing:
+      // start with all pixels on so they can disappear
+      model.all(PixelIntensity::Light);
+      m_intensity = PixelIntensity::Off;
+      m_asc = false; // animate bottom to top
+      start = TOTAL_PIXELS - 1;
+      m_end = -1;
+      break;
+    default:
+      // nothing to do
+      break;
+  }
+
+  m_idx = start;
+  model.set_transition(t);
+
+  if (this->is_suspended()) {
+    this->resume();
+  }
+}
+
+void TaskAnimateTransition::run() {
+  if (m_idx == m_end) {
+    set_timeout(clear_transition, 2000);
+    this->suspend();
+    return;
+  }
+
+  model.transition_frame(m_idx, m_intensity);
+  model.set_mask(m_idx);
+
+  m_idx += m_asc ? 1 : -1;
+}
+
 // ------------------------------------------------------------
 
 /*
@@ -759,14 +804,6 @@ TaskAnimateSparkles task_animate_sparkles;
 TaskAnimateAllPixels task_animate_all_pixels;
 Task sparkle_animation;
 */
-
-enum class ApplicationMode {
-  Normal = 0,
-  SingleVertical = 1,
-  SingleHorizontal = 2,
-  Diagnostic = 3,
-} mode;
-
 
 void __show_pixels(void*) {
   strip.show();
@@ -781,28 +818,7 @@ Task *current_task = nullptr;
 TaskAnimateSingleVertical task_animate_single_vertical;
 TaskAnimateSparkles task_animate_sparkles;
 TaskTraverse task_traverse;
-
-
-bool switch_state;
-void on_switch_change(void*) {
-  bool next_state = CircuitPlayground.slideSwitch();
-
-  if (switch_state == next_state) {
-    // no change
-    return;
-  }
-
-  dmsg("switch change: %d\n", next_state);
-
-  if (next_state) {
-    // switch to diagnostic mode
-    switch_mode(ApplicationMode::Diagnostic);
-  } else {
-    switch_mode(ApplicationMode::Normal);
-  }
-
-  switch_state = next_state;
-}
+TaskAnimateTransition task_animate_transition;
 
 void switch_mode(ApplicationMode m) {
   if (m == mode) {
@@ -843,6 +859,26 @@ void switch_mode(ApplicationMode m) {
 
   mode = m;
 }
+bool switch_state;
+void on_switch_change(void*) {
+  bool next_state = CircuitPlayground.slideSwitch();
+
+  if (switch_state == next_state) {
+    // no change
+    return;
+  }
+
+  dmsg("switch change: %d\n", next_state);
+
+  if (next_state) {
+    // switch to diagnostic mode
+    switch_mode(ApplicationMode::Diagnostic);
+  } else {
+    switch_mode(ApplicationMode::Normal);
+  }
+
+  switch_state = next_state;
+}
 
 void task_one_pixel() {
   static int i = 0;
@@ -857,22 +893,12 @@ void task_one_pixel() {
 
 void check_z(void*) {
   Z = CircuitPlayground.motionZ();
+  Transition t;
 
   if (abs(Z) >= Z_THRESHOLD) {
-    state = Z > 0 ? Appearing : Disappearing;
-  } else {
-    state = None;
-  }
-
-  switch (state) {
-    case Appearing:
-      model.appear();
-      break;
-    case Disappearing:
-      model.disappear();
-      break;
-    default:
-      break;
+    t = Z > 0 ? Appearing : Disappearing;
+    dmsg("Transition: %d\n", t);
+    task_animate_transition.set_transition(t);
   }
 }
 
@@ -882,9 +908,9 @@ void setup() {
   Serial.begin(9600);
   CircuitPlayground.begin();
   strip = Adafruit_CPlay_NeoPixel(TOTAL_PIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
+  strip.setBrightness(30);
   strip.begin();
   strip.clear();
-  strip.setBrightness(40);
   state = None;
   randomSeed(analogRead(0));
   mode = ApplicationMode::Normal;
@@ -908,10 +934,11 @@ void setup() {
   //current_task = new TaskAnimateSparkles;
   //current_task->set_interval(DEFAULT_ANIMATION_INTERVAL);
   //current_task->start(DEFAULT_ANIMATION_INITIAL_DELAY);
-  task_animate_sparkles.set_interval(DEFAULT_ANIMATION_INTERVAL).start(DEFAULT_ANIMATION_INITIAL_DELAY);
-  current_task = &task_animate_sparkles;
+  //current_task = &task_animate_sparkles;
 
+  //task_animate_sparkles.set_interval(DEFAULT_ANIMATION_INTERVAL).start(DEFAULT_ANIMATION_INITIAL_DELAY);
   task_traverse.set_interval(300).suspend();
+  task_animate_transition.set_interval(500).suspend();
 
   adk::set_interval(on_switch_change, 200);
   //task_animate_single_vertical.start(DEFAULT_ANIMATION_INITIAL_DELAY);
