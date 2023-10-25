@@ -3,27 +3,134 @@
 #include <Adafruit_Circuit_Playground.h>
 #include <Adafruit_CircuitPlayground.h>
 
+
 using namespace adk;
 
+# define MODE_SWITCH 21
 # define LED_PIN 12
-# define LED_COUNT 40
-# define Z_THRESHOLD 9.5
-# define LEFT_ARM_LENGTH 8
-# define LEFT_LEG_LENGTH 12
-# define RIGHT_LEG_LENGTH 12
-# define RIGHT_ARM_LENGTH 8
-# define TOTAL_PIXELS (LEFT_ARM_LENGTH + LEFT_LEG_LENGTH + RIGHT_LEG_LENGTH + RIGHT_ARM_LENGTH)
-# define MAX_FRAMES (4 * max(max(LEFT_ARM_LENGTH, LEFT_LEG_LENGTH), max(RIGHT_LEG_LENGTH, RIGHT_ARM_LENGTH)))
+# define Z_THRESHOLD 9.0
+# define TOTAL_PIXELS 40
+# define MAX_FRAMES (4 * max(max(left_arm_length, left_leg_length), max(right_leg_length, right_arm_length)))
+# define CHASE_LENGTH 6
+# define CHASE_SPACE 1
+# define CHASE_NUM 1
+# define CHASE_SPEED 80
 # define NUM_SPARKLE_PIXELS 5
 # define DEFAULT_MODE ApplicationMode::SingleVertical
 # define DEFAULT_ANIMATION_INTERVAL 100
-# define DEFAULT_ANIMATION_INITIAL_DELAY 5000
+# define DEFAULT_ANIMATION_INITIAL_DELAY 100
+
+// left arm pixels from top to bottom
+const uint8_t left_arm_length = 7;
+const uint8_t left_arm_pixels[] = {
+  6,
+  5,
+  4,
+  3,
+  2,
+  1,
+  0,
+};
+
+// left leg pixels from top to bottom
+const uint8_t left_leg_length = 13;
+const uint8_t left_leg_pixels[] = {
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  19,
+  14,
+  18,
+  15,
+  17,
+  16,
+};
+
+// right leg pixels from top to bottom
+const uint8_t right_leg_length = 13;
+const uint8_t right_leg_pixels[] = {
+  32,
+  31,
+  30,
+  29,
+  28,
+  20,
+  27,
+  21,
+  26,
+  22,
+  25,
+  23,
+  24,
+};
+
+// right arm pixels from top to bottom
+const uint8_t right_arm_length = 7;
+const uint8_t right_arm_pixels[] = {
+  33,
+  34,
+  35,
+  36,
+  37,
+  38,
+  39,
+};
 
 
+// horizontal traversal, cross-cutting appendages
+const uint8_t horizontal_traversal_pixels[] = {
+  6,
+  33,
+  34,
+  5,
+  7,
+  8,
+  31,
+  32,
+  35,
+  4,
+  9,
+  30,
+  29,
+  36,
+  3,
+  10,
+  28,
+  37,
+  11,
+  38,
+  2,
+  12,
+  13,
+  19,
+  20,
+  27,
+  1,
+  14,
+  18,
+  21,
+  26,
+  39,
+  0,
+  15,
+  17,
+  22,
+  25,
+  16,
+  23,
+  24,
+};
+
+
+Task task_z;
 float Z;
 Adafruit_CPlay_NeoPixel strip;
 
-enum Transition {None = 0, Appearing = 1, Disappearing = 2} state; 
+enum Transition {None = 0, Appearing = 1, Disappearing = 2} state;
 
 enum class PixelIntensity {
   Off = 0,
@@ -39,6 +146,15 @@ enum class Appendage {
   RightLeg = 2,
   RightArm = 3,
 };
+
+
+enum class ApplicationMode {
+  Normal = 0,
+  SingleVertical = 1,
+  SingleHorizontal = 2,
+  Diagnostic = 3,
+} mode;
+
 
 class PixelColor {
   unsigned short m_red;
@@ -142,7 +258,6 @@ class Model {
   int num_sparkle_pixels = 0;
   PixelSparkleAnimation sparkle_pixels[NUM_SPARKLE_PIXELS] = {};
   void select_pixels_for_animation();
-  PixelIntensity clamp_pixel_intensity(PixelSparkleAnimation& pixel);
   List<PixelSparkleAnimation> s_pixels;
   PixelColor m_default_color;
 
@@ -152,9 +267,12 @@ public:
     m_default_color = PixelColor(255, 0, 128); // start with pink
   }
 
+  PixelIntensity clamp_pixel_intensity(PixelSparkleAnimation& pixel);
   static void task_animate_sparkles(void*);
   void __sparkle_task();
   void set_color(PixelColor c);
+  void transition_vertical(uint8_t idx, PixelIntensity intensity);
+  uint8_t get_mask();
 
   void all(PixelIntensity intensity) {
     for (int i = 0; i < TOTAL_PIXELS; i++) {
@@ -162,98 +280,61 @@ public:
     }
   }
 
-  void set_transition(Transition t) {
-    switch(transition) {
-      case Appearing:
-        masked_pixels = 0;
-        break;
-      case Disappearing:
-        masked_pixels = TOTAL_PIXELS;
-        break;
-      default:
-        masked_pixels = TOTAL_PIXELS;
-        break;
-    }
+  void set_mask(uint8_t mask) {
+    masked_pixels = mask;
+  }
 
+  void set_transition(Transition t) {
     transition = t;
   }
 
-  int appear() {
-    if (transition != None) {
-      // transition not allowed
-      return -1;
-    }
-    
-    set_transition(Appearing);
-    all(PixelIntensity::Off);
-    // start transition task
-    // sleep 8
-    set_transition(None);
-    return 0;
+  bool can_transition(Transition t) {
+    // TODO use t
+    return transition == None;
   }
 
-  void disappear() {
-    if (transition != None) {
-      // transition not allowed
+  void transition_frame(uint8_t idx, PixelIntensity intensity) {
+    if (idx >= TOTAL_PIXELS) {
       return;
     }
-    set_transition(Disappearing);
-    all(PixelIntensity::Light);
-    Task *t = Task::get_current();
-    // start transition task
-    // sleep 2
-    set_transition(None);
+
+    set_pixel(horizontal_traversal_pixels[idx], intensity);
   }
-  
-  void transition_frame(int idx, PixelIntensity intensity) {
-    dmsg("transition_frame(%d, %d)\n", idx, (int)intensity);
-    // map idx to appendage and actual pixel id
-    /*
-     * Assume a grid of 4 columns, one for each appendage. Some
-     * appendages might be shorter than others, but we still
-     * consider those pixels for simplicity. When a "ghost"
-     * pixel is updated, we ignore it.
-     */
-    Appendage appendage = (Appendage)(idx % 4);
-    int i = idx / 4;
-    transition_appendage(appendage, i, intensity);
-  }
-  
-  void transition_appendage(Appendage appendage, int idx, PixelIntensity i) {
-    dmsg("transition_appendage: %d, %d, %d\n", (int)appendage, idx, (int)i);
-    int pixel = 0;
+
+  void transition_appendage(Appendage appendage, uint8_t idx, PixelIntensity i) {
+    uint8_t pixel = 0;
     switch(appendage) {
       case Appendage::LeftArm:
-        if (idx >= LEFT_ARM_LENGTH) {
+        if (idx >= left_arm_length) {
           return;
         }
-        pixel = idx;
+        pixel = left_arm_pixels[idx];
         break;
       case Appendage::LeftLeg:
-        if (idx >= LEFT_LEG_LENGTH) {
+        if (idx >= left_leg_length) {
           return;
         }
-        pixel = idx + LEFT_ARM_LENGTH;
+        pixel = left_leg_pixels[idx];
         break;
       case Appendage::RightLeg:
-        if (idx >= RIGHT_LEG_LENGTH) {
+        if (idx >= right_leg_length) {
           return;
         }
-        pixel = idx + LEFT_ARM_LENGTH + LEFT_LEG_LENGTH;
+        pixel = right_leg_pixels[idx];
         break;
       case Appendage::RightArm:
-        if (idx >= RIGHT_ARM_LENGTH) {
+        if (idx >= right_arm_length) {
           return;
         }
 
-        pixel = idx + LEFT_ARM_LENGTH + LEFT_LEG_LENGTH + RIGHT_LEG_LENGTH;
+        pixel = right_arm_pixels[idx];
         break;
     }
 
     set_pixel(pixel, i);
   }
 
-  void set_pixel(uint16_t idx, PixelIntensity i) {
+  void set_pixel(uint8_t idx, PixelIntensity i) {
     uint8_t red = m_default_color.red();
     uint8_t green = m_default_color.green();
     uint8_t blue = m_default_color.blue();
@@ -266,6 +347,11 @@ public:
     strip.setPixelColor(idx, red, green, blue);
   }
 } model;
+
+
+uint8_t Model::get_mask() {
+  return masked_pixels;
+}
 
 
 void Model::__sparkle_task() {
@@ -315,7 +401,7 @@ PixelIntensity Model::clamp_pixel_intensity(PixelSparkleAnimation &pixel) {
     return intensity;
   }
 
-  if (pixel.id >= masked_pixels) {
+  if (pixel.id < masked_pixels) {
     return intensity;
   }
 
@@ -356,7 +442,7 @@ void Model::__transition_task(Task &t) {
   int total_pixels = TOTAL_PIXELS;
   PixelIntensity intensity;
   int direction, start, end;
-  switch(transition) {
+  switch (transition) {
     case Appearing:
       intensity = PixelIntensity::Light;
       direction = 1; // animate top to bottom
@@ -387,6 +473,35 @@ void Model::__transition_task(Task &t) {
 
 void Model::task_animate_sparkles(void *m) {
   static_cast<Model*>(m)->__sparkle_task();
+}
+
+void Model::transition_vertical(uint8_t idx, PixelIntensity intensity) {
+  if (idx >= TOTAL_PIXELS || idx < 0) {
+    return;
+  }
+
+  if (idx < left_arm_length) {
+    transition_appendage(Appendage::LeftArm, idx, intensity);
+    return;
+  }
+  idx = idx - left_arm_length;
+
+  if (idx < left_leg_length) {
+    transition_appendage(Appendage::LeftLeg, idx, intensity);
+    return;
+  }
+  idx = idx - left_leg_length;
+
+  if (idx < right_leg_length) {
+    transition_appendage(Appendage::RightLeg, idx, intensity);
+    return;
+  }
+  idx = idx - right_leg_length;
+
+  if (idx < right_arm_length) {
+    transition_appendage(Appendage::RightArm, idx, intensity);
+    return;
+  }
 }
 
 
@@ -468,19 +583,19 @@ void TaskAnimateSingleVertical::run() {
   Appendage next_appendage;
   switch (m_appendage) {
     case Appendage::LeftArm:
-      appendage_length = LEFT_ARM_LENGTH;
+      appendage_length = left_arm_length;
       next_appendage = Appendage::LeftLeg;
       break;
     case Appendage::LeftLeg:
-      appendage_length = LEFT_LEG_LENGTH;
+      appendage_length = left_leg_length;
       next_appendage = Appendage::RightLeg;
       break;
     case Appendage::RightLeg:
-      appendage_length = RIGHT_LEG_LENGTH;
+      appendage_length = right_leg_length;
       next_appendage = Appendage::RightArm;
       break;
     case Appendage::RightArm:
-      appendage_length = RIGHT_ARM_LENGTH;
+      appendage_length = right_arm_length;
       next_appendage = Appendage::LeftArm;
       break;
     default:
@@ -536,10 +651,10 @@ void TaskAnimateSparkles::select_pixels_for_animation() {
     if (p->id == -1) {
       continue;
     }
-    
+
     if (p->is_complete()) {
       p->id = -1;
-      p->reset();      
+      p->reset();
     }
   }
 
@@ -550,7 +665,11 @@ void TaskAnimateSparkles::select_pixels_for_animation() {
     return;
   }
 
-  // TODO check masked pixels
+  // check masked pixels
+  uint8_t mask = model.get_mask();
+  if (id >= mask) {
+    return;
+  }
 
   // find a slot for it
   for (int i = 0; i < len; i++) {
@@ -571,12 +690,145 @@ void TaskAnimateSparkles::run() {
     if (p->id == -1) {
       continue;
     }
-    
-    model.transition_frame(p->id, p->intensity());
+
+    PixelIntensity intensity = p->id < model.get_mask() ? p->intensity() : PixelIntensity::Off;
+    model.transition_frame(p->id, intensity);
     p->increment_frame();
   }
 
   strip.show();
+}
+
+
+class TaskTraverse : public Task {
+  uint8_t m_idx;
+  bool m_asc;
+  bool m_is_horizontal;
+public:
+  TaskTraverse() : m_idx(0), m_asc(true), m_is_horizontal(true) {};
+  virtual void run();
+};
+
+
+void TaskTraverse::run() {
+  PixelIntensity intensity = PixelIntensity::Light;
+  strip.clear();
+  if (m_is_horizontal) {
+    model.transition_frame(m_idx, intensity);
+  } else {
+    model.transition_vertical(m_idx, intensity);
+  }
+  strip.show();
+
+  if (m_asc) {
+    m_idx++;
+  } else {
+    m_idx--;
+  }
+
+  if (m_idx >= (TOTAL_PIXELS - 1) || m_idx <= 0) {
+    if (!m_asc) {
+      // switch traversal strategy
+      m_is_horizontal = !m_is_horizontal;
+    }
+
+    // reverse
+    m_asc = !m_asc;
+
+    // debug
+    dmsg("strategy: %d\n", m_is_horizontal);
+    dmsg("direction: %d\n", m_asc);
+    dmsg("m_idx: %d\n", m_idx);
+  }
+}
+
+void clear_transition(void*) {
+  model.set_transition(None);
+  // TODO should be part of set_transition
+  model.set_mask(TOTAL_PIXELS);
+}
+
+class TaskAnimateTransition : public Task {
+  bool m_asc;
+  int m_end;
+  int m_idx;
+  Transition m_transition;
+  PixelIntensity m_intensity;
+public:
+  void set_transition(Transition t);
+  virtual void run();
+};
+
+void TaskAnimateTransition::set_transition(Transition t) {
+  if (!model.can_transition(t)) {
+    return;
+  }
+
+  dmsg("TaskAnimateTransition::set_transition: %d\n", t);
+
+  uint8_t chase_offset = CHASE_NUM * (CHASE_LENGTH + CHASE_SPACE);
+  int start;
+  switch (t) {
+    case Appearing:
+      // set all pixels off to start so they can appear
+      //model.all(PixelIntensity::Off);
+      m_intensity = PixelIntensity::Light;
+      m_asc = true; // animate top to bottom
+      start = 0;
+      m_end = TOTAL_PIXELS + chase_offset - 1;
+      break;
+    case Disappearing:
+      // start with all pixels on so they can disappear
+      //model.all(PixelIntensity::Light);
+      m_intensity = PixelIntensity::Off;
+      m_asc = false; // animate bottom to top
+      start = TOTAL_PIXELS - 1;
+      m_end = -1 * chase_offset;
+      break;
+    default:
+      // nothing to do
+      break;
+  }
+
+  m_idx = start;
+  model.set_transition(t);
+
+  if (this->is_suspended()) {
+    this->resume();
+  }
+}
+
+void TaskAnimateTransition::run() {
+  if (m_idx == m_end) {
+    set_timeout(clear_transition, 2000);
+    this->suspend();
+    return;
+  }
+
+  int direction = m_asc ? 1 : -1;
+  // create chase lines
+  for (int i = 0; i < CHASE_NUM; i++) {
+    int chase_offset = -1 * direction * i * (CHASE_LENGTH + CHASE_SPACE);
+
+    // Touch a line of pixels in reverse direction of the chase pattern
+    for (int j = 0; j < CHASE_LENGTH; j++) {
+      model.transition_frame(m_idx + chase_offset + (-1 * j * direction), PixelIntensity::Light);
+    }
+
+    // Create space between chase lines and end the chase line
+    for (int j = 0; j < CHASE_SPACE; j++) {
+      model.transition_frame(m_idx + chase_offset + (-1 * direction * CHASE_LENGTH) + (-1 * j * direction), PixelIntensity::Off);
+    }
+  }
+
+  // Update the mask
+  model.set_mask(max(m_idx, 0));
+
+  m_idx += direction;
+
+  // TODO use event emitter with a separate show task
+  // Currently strip show is handled by the sparkle task
+  //strip.show();
 }
 
 // ------------------------------------------------------------
@@ -589,45 +841,116 @@ TaskAnimateAllPixels task_animate_all_pixels;
 Task sparkle_animation;
 */
 
-enum class ApplicationMode {
-  Normal = 0,
-  SingleVertical = 1,
-  SingleHorizontal = 2
-} mode;
-
-
 void __show_pixels(void*) {
   strip.show();
 }
 
-
-void switch_mode(void*) {
-  switch (mode) {
-    case ApplicationMode::Normal:
-      break;
-  }
-
-  strip.clear();
-}
 
 void print_version(void*) {
   Serial.println("starting v2...");
 }
 
 Task *current_task = nullptr;
-//TaskAnimateSingleVertical task_animate_single_vertical;
-TaskAnimateSparkles task;
+TaskAnimateSingleVertical task_animate_single_vertical;
+TaskAnimateSparkles task_animate_sparkles;
+TaskTraverse task_traverse;
+TaskAnimateTransition task_animate_transition;
+
+void switch_mode(ApplicationMode m) {
+  if (m == mode) {
+    return;
+  }
+
+  dmsg("mode switch %d -> %d\n", mode, m);
+
+  // Suspend the current task
+  switch (mode) {
+    case ApplicationMode::Normal:
+      task_animate_sparkles.suspend();
+      task_z.suspend();
+      break;
+    case ApplicationMode::SingleVertical:
+      task_animate_single_vertical.suspend();
+      break;
+    case ApplicationMode::Diagnostic:
+      task_traverse.suspend();
+      break;
+  }
+
+  // TODO model.clear()
+  strip.clear();
+
+  switch (m) {
+    case ApplicationMode::Normal:
+      task_animate_sparkles.resume();
+      task_z.resume();
+      break;
+    case ApplicationMode::SingleVertical:
+      task_animate_single_vertical.resume();
+      break;
+    case ApplicationMode::Diagnostic:
+      task_traverse.resume();
+      break;
+  }
+
+  mode = m;
+}
+bool switch_state;
+void on_switch_change(void*) {
+  bool next_state = CircuitPlayground.slideSwitch();
+
+  if (switch_state == next_state) {
+    // no change
+    return;
+  }
+
+  dmsg("switch change: %d\n", next_state);
+
+  if (next_state) {
+    // switch to diagnostic mode
+    switch_mode(ApplicationMode::Diagnostic);
+  } else {
+    switch_mode(ApplicationMode::Normal);
+  }
+
+  switch_state = next_state;
+}
+
+void task_one_pixel() {
+  static int i = 0;
+
+  strip.clear();
+  model.transition_frame(i++, PixelIntensity::Full);
+  strip.show();
+  if (i >= TOTAL_PIXELS) {
+    i = 0;
+  }
+}
+
+void check_z(void*) {
+  Z = CircuitPlayground.motionZ();
+  Transition t;
+
+  if (abs(Z) >= Z_THRESHOLD) {
+    t = Z > 0 ? Appearing : Disappearing;
+    dmsg("Transition: %d\n", t);
+    task_animate_transition.set_transition(t);
+  }
+}
+
 
 void setup() {
   delay(5000);
   Serial.begin(9600);
-  CircuitPlayground.begin();  
-  strip = Adafruit_CPlay_NeoPixel(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+  CircuitPlayground.begin();
+  strip = Adafruit_CPlay_NeoPixel(TOTAL_PIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
+  strip.setBrightness(30);
   strip.begin();
   strip.clear();
-  strip.setBrightness(40);
   state = None;
   randomSeed(analogRead(0));
+  mode = ApplicationMode::Normal;
+  switch_state = false;
 
 
   set_timeout(print_version, 5000);
@@ -643,23 +966,27 @@ void setup() {
       current_task = new TaskAnimateAllPixels();
       break;
   }*/
-  
-  /*
-  current_task = new TaskAnimateSingleVertical();
-  current_task->set_interval(500);
-  current_task->start(DEFAULT_ANIMATION_INITIAL_DELAY);
-  */
 
-  task.set_interval(DEFAULT_ANIMATION_INTERVAL).start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  //current_task = new TaskAnimateSparkles;
+  //current_task->set_interval(DEFAULT_ANIMATION_INTERVAL);
+  //current_task->start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  //current_task = &task_animate_sparkles;
 
+  task_animate_sparkles.set_interval(DEFAULT_ANIMATION_INTERVAL).start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  task_traverse.set_interval(300).suspend();
+  task_animate_transition.set_interval(CHASE_SPEED).suspend();
+
+  adk::set_interval(on_switch_change, 200);
   //task_animate_single_vertical.start(DEFAULT_ANIMATION_INITIAL_DELAY);
+  task_z.set_interval(200).start(check_z);
+
 
   //adk::set_interval(check_z, 200);
   //model.sparkle_animation();
   //sparkle_animation.set_interval(1000).start(&Model::task_animate_sparkles, &model);
   //task_animate_single_sparkle.set_interval(500).start(1);
   //task_animate_sparkles.set_interval(500).start(1);
-  
+
   //adk::set_interval(__show_pixels, 100);
   //adk::set_interval(task_one_pixel, 1000);
 }
@@ -668,38 +995,3 @@ void loop() {
   adk::run();
 }
 
-void task_one_pixel() {
-  static int i = 0;
-  
-  strip.clear();
-  model.transition_frame(i++, PixelIntensity::Full);
-  strip.show();
-  if (i >= TOTAL_PIXELS) {
-    i = 0;
-  }
-}
-
-void check_z() {
-  Z = CircuitPlayground.motionZ();
-  Serial.print("Z: ");
-  Serial.println(Z);
-
-  if (abs(Z) >= Z_THRESHOLD) {
-    state = Z > 0 ? Appearing : Disappearing;
-  } else {
-    state = None;
-  }
-  Serial.print("state: ");
-  Serial.println(state);
-
-  switch (state) {
-    case Appearing:
-      model.appear();
-      break;
-    case Disappearing:
-      model.disappear();
-      break;
-    default:
-      break;
-  }
-}
