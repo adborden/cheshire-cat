@@ -744,6 +744,8 @@ void TaskTraverse::run() {
 
 void clear_transition(void*) {
   model.set_transition(None);
+  // TODO should be part of set_transition
+  model.set_mask(TOTAL_PIXELS);
 }
 
 class TaskAnimateTransition : public Task {
@@ -820,7 +822,7 @@ void TaskAnimateTransition::run() {
   }
 
   // Update the mask
-  model.set_mask(m_idx);
+  model.set_mask(max(m_idx, 0));
 
   m_idx += direction;
 
