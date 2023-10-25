@@ -8,13 +8,13 @@ using namespace adk;
 
 # define MODE_SWITCH 21
 # define LED_PIN 12
-# define Z_THRESHOLD 9.5
+# define Z_THRESHOLD 9.0
 # define TOTAL_PIXELS 40
 # define MAX_FRAMES (4 * max(max(left_arm_length, left_leg_length), max(right_leg_length, right_arm_length)))
-# define CHASE_LENGTH 2
-# define CHASE_SPACE 2
-# define CHASE_NUM 2
-# define CHASE_SPEED 100
+# define CHASE_LENGTH 6
+# define CHASE_SPACE 1
+# define CHASE_NUM 1
+# define CHASE_SPEED 80
 # define NUM_SPARKLE_PIXELS 5
 # define DEFAULT_MODE ApplicationMode::SingleVertical
 # define DEFAULT_ANIMATION_INTERVAL 100
