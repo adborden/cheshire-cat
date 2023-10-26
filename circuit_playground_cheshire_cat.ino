@@ -16,6 +16,7 @@ using namespace adk;
 # define CHASE_NUM 1
 # define CHASE_SPEED 80
 # define NUM_SPARKLE_PIXELS 5
+# define MIN_LED_REFRESH 5
 # define DEFAULT_MODE ApplicationMode::SingleVertical
 # define DEFAULT_ANIMATION_INTERVAL 100
 # define DEFAULT_ANIMATION_INITIAL_DELAY 100
@@ -260,6 +261,7 @@ class Model {
   void select_pixels_for_animation();
   List<PixelSparkleAnimation> s_pixels;
   PixelColor m_default_color;
+  tick_t m_last_show;
 
 public:
   Model() {
@@ -273,6 +275,7 @@ public:
   void set_color(PixelColor c);
   void transition_vertical(uint8_t idx, PixelIntensity intensity);
   uint8_t get_mask();
+  void show();
 
   void all(PixelIntensity intensity) {
     for (int i = 0; i < TOTAL_PIXELS; i++) {
@@ -504,6 +507,21 @@ void Model::transition_vertical(uint8_t idx, PixelIntensity intensity) {
   }
 }
 
+void __model_show(void*) {
+  model.show();
+}
+
+void Model::show() {
+  msec_t elapsed = elapsed_msec(m_last_show);
+  if (elapsed < MIN_LED_REFRESH) {
+    set_timeout(__model_show, MIN_LED_REFRESH - elapsed);
+    return;
+  }
+
+  strip.show();
+  m_last_show = ticks();
+}
+
 
 class TaskAnimateSingleSparkle : public Task {
   int m_id;
@@ -558,7 +576,7 @@ void TaskAnimateAllPixels::run() {
     m_pixel = new PixelSparkleAnimation(++id % MAX_FRAMES);
   }
 
-  strip.show();
+  model.show();
 }
 
 
@@ -620,7 +638,7 @@ void TaskAnimateSingleVertical::run() {
   }
 
   dmsg("task horizontal end: %d, %d, %d\n", (int)m_appendage, m_idx, (int)m_pixel.intensity());
-  strip.show();
+  model.show();
 }
 
 
@@ -696,7 +714,7 @@ void TaskAnimateSparkles::run() {
     p->increment_frame();
   }
 
-  strip.show();
+  model.show();
 }
 
 
@@ -718,7 +736,7 @@ void TaskTraverse::run() {
   } else {
     model.transition_vertical(m_idx, intensity);
   }
-  strip.show();
+  model.show();
 
   if (m_asc) {
     m_idx++;
@@ -823,12 +841,10 @@ void TaskAnimateTransition::run() {
 
   // Update the mask
   model.set_mask(max(m_idx, 0));
+  model.show();
 
   m_idx += direction;
 
-  // TODO use event emitter with a separate show task
-  // Currently strip show is handled by the sparkle task
-  //strip.show();
 }
 
 // ------------------------------------------------------------
@@ -840,11 +856,6 @@ TaskAnimateSparkles task_animate_sparkles;
 TaskAnimateAllPixels task_animate_all_pixels;
 Task sparkle_animation;
 */
-
-void __show_pixels(void*) {
-  strip.show();
-}
-
 
 void print_version(void*) {
   Serial.println("starting v2...");
@@ -921,7 +932,7 @@ void task_one_pixel() {
 
   strip.clear();
   model.transition_frame(i++, PixelIntensity::Full);
-  strip.show();
+  model.show();
   if (i >= TOTAL_PIXELS) {
     i = 0;
   }
@@ -987,7 +998,6 @@ void setup() {
   //task_animate_single_sparkle.set_interval(500).start(1);
   //task_animate_sparkles.set_interval(500).start(1);
 
-  //adk::set_interval(__show_pixels, 100);
   //adk::set_interval(task_one_pixel, 1000);
 }
 
